@@ -24,3 +24,32 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+
+/* Scrollbar como utilitário nativo do Tailwind v4 */
+@utility custom-scrollbar {
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+  &::-webkit-scrollbar-thumb:hover { background: #334155; }
+}
+
+/* Estilização manual do React Markdown */
+.prose h1, .prose h2 { 
+  color: #818cf8; 
+  font-weight: 800; 
+  font-size: 1.25rem; 
+  margin-top: 1.5rem; 
+}
+.prose p { 
+  color: #94a3b8; 
+  line-height: 1.6; 
+  margin-bottom: 1rem; 
+}
+.prose li { 
+  color: #cbd5e1; 
+  margin-bottom: 0.5rem; 
+}
+.prose strong { 
+  color: #f8fafc; 
+}

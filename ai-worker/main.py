@@ -259,7 +259,18 @@ def extract_embeddings_full(audio_path: str) -> tuple[list[np.ndarray], list[tup
     if not DIARIZATION_ENABLED:
         return [], []
 
-    signal_np, _ = librosa.load(audio_path, sr=SAMPLE_RATE)
+    try:
+        signal_np, _ = librosa.load(audio_path, sr=SAMPLE_RATE)
+        
+        # Prevenção do erro 'Not finite': substitui NaN ou Inf no buffer por zero
+        if not np.isfinite(signal_np).all():
+            log.warning("Valores não-finitos (NaN/Inf) encontrados no áudio. Higienizando buffer...")
+            signal_np = np.nan_to_num(signal_np, nan=0.0, posinf=0.0, neginf=0.0)
+            
+    except Exception as e:
+        log.error("Erro ao ler %s com librosa: %s", audio_path, e)
+        return [], []
+
     signal = torch.from_numpy(signal_np).unsqueeze(0)  # [1, T]
     total_samples = signal.shape[1]
     

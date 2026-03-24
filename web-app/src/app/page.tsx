@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import {
   Upload, FileAudio, FileText, BrainCircuit, Loader2, Mic, StopCircle,
   RefreshCw, Layers, ChevronRight, Calendar, Users, Clock, CheckCircle2,
@@ -11,12 +11,19 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 
+// --- Types & Interfaces ---
+interface Word {
+  word: string;
+  start: number;
+  end: number;
+}
+
 interface Segment {
   start: number;
   end: number;
   speaker: string;
   text: string;
-  words: Array<{ word: string, start: number, end: number }>;
+  words: Word[];
 }
 
 interface MeetingResult {
@@ -30,12 +37,37 @@ interface MeetingResult {
   segments?: Segment[];
 }
 
+interface HistoryItem extends MeetingResult {
+  id: string;
+  timestamp: string;
+}
+
+interface WorkerStatus {
+  status: string;
+  gpu_name?: string;
+  [key: string]: unknown;
+}
+
+interface ActionItem {
+  text: string;
+  checked: boolean;
+  id: string;
+}
+
+// --- Constants ---
+const API_BASE = "http://localhost:8000";
+const INTERNAL_API = "/api/process";
+const HISTORY_KEY = "meeting_history";
+
 export default function Home() {
+  // --- UI State ---
   const [activeTab, setActiveTab] = useState<"upload" | "live">("upload");
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [copiedStage, setCopiedStage] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(null);
 
+  // --- Processing State ---
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [progressStatus, setProgressStatus] = useState("Aguardando...");
@@ -43,15 +75,17 @@ export default function Home() {
   const [stages, setStages] = useState({ transcription: 0, diarization: 0, summarization: 0 });
   const [previewText, setPreviewText] = useState("");
   const [results, setResults] = useState<MeetingResult | null>(null);
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
+  // --- Settings State ---
   const [settings, setSettings] = useState({
     transcriptionModel: "large-v3-turbo",
     summarizationModel: "qwen3:4b",
     device: "auto"
   });
-  const [workerStatus, setWorkerStatus] = useState<any>(null);
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
 
+  // --- Audio State ---
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
@@ -59,71 +93,110 @@ export default function Home() {
   const [audioDuration, setAudioDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // --- Live Recording State ---
   const [isRecording, setIsRecording] = useState(false);
   const [liveTranscription, setLiveTranscription] = useState("");
-  const [actionItems, setActionItems] = useState<Array<{ text: string, checked: boolean, id: string }>>([]);
+  const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [newTaskText, setNewTaskText] = useState("");
+
+  // --- Speaker Management ---
   const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [tempName, setTempName] = useState("");
 
+  // --- Refs ---
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // --- Effects ---
+
+  // Load History & Check Worker Status
   useEffect(() => {
-    const saved = localStorage.getItem("meeting_history");
-    if (saved) setHistory(JSON.parse(saved));
+    try {
+      const saved = localStorage.getItem(HISTORY_KEY);
+      if (saved) setHistory(JSON.parse(saved));
+    } catch (err) {
+      console.error("Falha ao carregar histórico", err);
+    }
 
     const checkStatus = async () => {
       try {
-        const res = await fetch("http://localhost:8000/status");
+        const res = await fetch(`${API_BASE}/status`);
         if (res.ok) setWorkerStatus(await res.json());
-      } catch (e) { }
+      } catch (e) {
+        console.warn("Worker de processamento offline ou inacessível.");
+      }
     };
+
     checkStatus();
     const interval = setInterval(checkStatus, 10000);
     return () => clearInterval(interval);
   }, []);
 
+  // Update Speaker Names when results change
   useEffect(() => {
     if (results?.speaker_stats) {
-      const initialNames: Record<string, string> = {};
-      Object.keys(results.speaker_stats).forEach(key => {
-        initialNames[key] = key;
+      setSpeakerNames(prev => {
+        const initialNames: Record<string, string> = { ...prev };
+        Object.keys(results.speaker_stats!).forEach(key => {
+          if (!initialNames[key]) initialNames[key] = key;
+        });
+        return initialNames;
       });
-      setSpeakerNames(initialNames);
     }
   }, [results]);
 
-  const saveToHistory = (newResult: any) => {
-    const updated = [
-      { ...newResult, timestamp: new Date().toISOString(), id: Date.now() },
-      ...history.slice(0, 9)
-    ];
-    setHistory(updated);
-    localStorage.setItem("meeting_history", JSON.stringify(updated));
-  };
+  // Cleanup Object URLs to prevent Memory Leaks
+  useEffect(() => {
+    return () => {
+      if (audioUrl && audioUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
+  }, [audioUrl]);
 
-  const loadFromHistory = (item: any) => {
+  // --- Handlers ---
+
+  const clearError = () => setGlobalError(null);
+
+  const saveToHistory = useCallback((newResult: MeetingResult) => {
+    setHistory(prev => {
+      const updated: HistoryItem[] = [
+        { ...newResult, timestamp: new Date().toISOString(), id: crypto.randomUUID() },
+        ...prev.slice(0, 9)
+      ];
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const loadFromHistory = (item: HistoryItem) => {
     setResults(item);
     extractActionItems(item.summary);
     setShowHistory(false);
+    setGlobalError(null);
   };
 
-  const deleteHistoryItem = (id: number) => {
-    const updated = history.filter(item => item.id !== id);
-    setHistory(updated);
-    localStorage.setItem("meeting_history", JSON.stringify(updated));
+  const deleteHistoryItem = (id: string) => {
+    setHistory(prev => {
+      const updated = prev.filter(item => item.id !== id);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const copyToClipboard = async (text: string, stage: string) => {
+    if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
       setCopiedStage(stage);
       setTimeout(() => setCopiedStage(null), 2000);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error("Erro ao copiar para clipboard:", err);
+      setGlobalError("Falha ao copiar para área de transferência.");
+    }
   };
 
   const exportToMarkdown = () => {
@@ -131,12 +204,15 @@ export default function Home() {
     let content = `# Reunião - ${new Date().toLocaleDateString()}\n\n`;
     content += `## 📊 Resumo da IA\n\n${displaySummary}\n\n`;
     content += `## 📝 Transcrição Completa\n\n${displayTranscription}\n`;
+
     const blob = new Blob([content], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `meeting_resume_${new Date().toISOString().split('T')[0]}.md`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
@@ -147,6 +223,7 @@ export default function Home() {
       setResults(null);
       setAudioUrl(URL.createObjectURL(selectedFile));
       setActionItems([]);
+      clearError();
     }
   };
 
@@ -155,10 +232,13 @@ export default function Home() {
       abortControllerRef.current.abort();
     }
     try {
-      await fetch("http://localhost:8000/cancel", { method: "POST" });
-    } catch (e) { }
-    setLoading(false);
-    setProgressStatus("Cancelado");
+      await fetch(`${API_BASE}/cancel`, { method: "POST" });
+    } catch (e) {
+      console.warn("Falha ao notificar backend sobre o cancelamento.");
+    } finally {
+      setLoading(false);
+      setProgressStatus("Cancelado");
+    }
   };
 
   const handleUpload = async () => {
@@ -166,6 +246,7 @@ export default function Home() {
     setLoading(true);
     setResults(null);
     setPreviewText("");
+    clearError();
     setStages({ transcription: 0, diarization: 0, summarization: 0 });
 
     const abortController = new AbortController();
@@ -173,7 +254,7 @@ export default function Home() {
 
     const progressInterval = setInterval(async () => {
       try {
-        const res = await fetch("http://localhost:8000/progress");
+        const res = await fetch(`${API_BASE}/progress`);
         if (res.ok) {
           const data = await res.json();
           setProgressStatus(data.status);
@@ -181,7 +262,9 @@ export default function Home() {
           if (data.stages) setStages(data.stages);
           if (data.current_text) setPreviewText(data.current_text);
         }
-      } catch (e) { }
+      } catch (e) {
+        // Falhas de polling não devem interromper a UI brutalmente, apenas ignorar
+      }
     }, 800);
 
     const formData = new FormData();
@@ -191,19 +274,28 @@ export default function Home() {
     formData.append("device", settings.device);
 
     try {
-      const response = await fetch("/api/process", {
+      const response = await fetch(INTERNAL_API, {
         method: "POST",
         body: formData,
         signal: abortController.signal
       });
-      if (!response.ok) throw new Error("Falha ao processar");
-      const data = await response.json();
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.message || `Falha ao processar: ${response.statusText}`);
+      }
+
+      const data: MeetingResult = await response.json();
       setResults(data);
       saveToHistory(data);
       extractActionItems(data.summary);
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
         setProgressStatus("Cancelado pelo usuário");
+      } else {
+        const msg = err instanceof Error ? err.message : "Erro desconhecido durante o processamento.";
+        setGlobalError(msg);
+        setProgressStatus("Erro no processamento");
       }
     } finally {
       clearInterval(progressInterval);
@@ -219,6 +311,7 @@ export default function Home() {
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
       audioChunksRef.current = [];
+      clearError();
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
@@ -236,15 +329,17 @@ export default function Home() {
         formData.append("audio", audioBlob);
 
         try {
-          const response = await fetch("/api/process?type=transcription-only", { method: "POST", body: formData });
+          const response = await fetch(`${INTERNAL_API}?type=transcription-only`, { method: "POST", body: formData });
           if (response.ok) {
             const data = await response.json();
             setLiveTranscription(data.transcription);
           }
-        } catch (err) { }
+        } catch (err) {
+          console.warn("Erro ao buscar transcrição parcial.", err);
+        }
       }, 10000);
     } catch (err) {
-      alert("Microfone não acessível!");
+      setGlobalError("Microfone não acessível! Verifique as permissões do navegador.");
     }
   };
 
@@ -259,6 +354,7 @@ export default function Home() {
     setLoading(true);
     setProgressStatus("Gerando resumo final...");
 
+    // Delay para garantir que o último chunk foi gravado
     setTimeout(async () => {
       const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
       const formData = new FormData();
@@ -268,14 +364,16 @@ export default function Home() {
       formData.append("device", settings.device);
 
       try {
-        const response = await fetch("/api/process", { method: "POST", body: formData });
-        const data = await response.json();
+        const response = await fetch(INTERNAL_API, { method: "POST", body: formData });
+        if (!response.ok) throw new Error("Falha na geração do resumo final.");
+
+        const data: MeetingResult = await response.json();
         setResults(data);
         setAudioUrl(URL.createObjectURL(audioBlob));
         saveToHistory(data);
         extractActionItems(data.summary);
-      } catch (err) {
-        alert("Erro no resumo final.");
+      } catch (err: unknown) {
+        setGlobalError(err instanceof Error ? err.message : "Erro no processamento final.");
       } finally {
         setLoading(false);
       }
@@ -285,7 +383,7 @@ export default function Home() {
   const extractActionItems = (summary: string) => {
     if (!summary) return;
     const lines = summary.split('\n');
-    const items: Array<{ text: string, checked: boolean, id: string }> = [];
+    const items: ActionItem[] = [];
     let inSection = false;
 
     lines.forEach(line => {
@@ -295,7 +393,7 @@ export default function Home() {
       else if (inSection && (line.trim().startsWith('-') || line.trim().startsWith('*') || line.includes('[ ]'))) {
         const cleanText = line.replace(/^([-*]|\[ \])\s*/, '').replace(/\[ \]/g, '').trim();
         if (cleanText.length > 3) {
-          items.push({ text: cleanText, checked: false, id: Math.random().toString(36).substr(2, 9) });
+          items.push({ text: cleanText, checked: false, id: crypto.randomUUID() });
         }
       }
     });
@@ -309,7 +407,7 @@ export default function Home() {
     setEditingSpeaker(null);
   };
 
-  const getProcessedText = (originalText: string) => {
+  const getProcessedText = useCallback((originalText: string) => {
     let text = originalText || "";
     Object.entries(speakerNames).forEach(([id, name]) => {
       if (id !== name) {
@@ -319,29 +417,41 @@ export default function Home() {
       }
     });
     return text;
-  };
+  }, [speakerNames]);
 
   const displayTranscription = getProcessedText(results?.transcription || previewText || liveTranscription);
   const displaySummary = getProcessedText(results?.summary || "");
 
   const groupedSegments = useMemo(() => {
     if (!results?.segments) return [];
-    return results.segments.reduce((acc: any[], current) => {
+    return results.segments.reduce((acc: Segment[], current) => {
       if (acc.length > 0 && acc[acc.length - 1].speaker === current.speaker) {
-        acc[acc.length - 1].words = [...acc[acc.length - 1].words, ...current.words];
-        acc[acc.length - 1].end = current.end;
-        acc[acc.length - 1].text += " " + current.text;
-      } else acc.push({ ...current });
+        const last = acc[acc.length - 1];
+        last.words = [...last.words, ...current.words];
+        last.end = current.end;
+        last.text += " " + current.text;
+      } else {
+        // Clone profundo raso para evitar mutações indesejadas
+        acc.push({ ...current, words: [...current.words] });
+      }
       return acc;
     }, []);
   }, [results?.segments]);
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 font-sans selection:bg-indigo-500/30 selection:text-white">
+    <div className="min-h-screen bg-[#020617] text-slate-200 font-sans selection:bg-indigo-500/30 selection:text-white relative">
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-5%] left-[-5%] w-[45%] h-[45%] bg-indigo-600/10 blur-[120px] rounded-full" />
         <div className="absolute bottom-[-5%] right-[-5%] w-[45%] h-[45%] bg-emerald-600/10 blur-[120px] rounded-full" />
       </div>
+
+      {globalError && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-red-500/90 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-5">
+          <AlertCircle size={20} />
+          <span className="font-semibold text-sm">{globalError}</span>
+          <button onClick={clearError} className="ml-4 hover:text-red-200"><XCircle size={16} /></button>
+        </div>
+      )}
 
       <main className="relative z-10 max-w-[1400px] mx-auto px-6 py-8 lg:py-12">
         <header className="flex flex-col md:flex-row items-center justify-between gap-6 mb-12">
@@ -369,7 +479,7 @@ export default function Home() {
               {["upload", "live"].map((tab) => (
                 <button
                   key={tab}
-                  onClick={() => { setActiveTab(tab as any); setResults(null); }}
+                  onClick={() => { setActiveTab(tab as "upload" | "live"); setResults(null); clearError(); }}
                   className={`relative px-6 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === tab ? "text-white" : "text-slate-400 hover:text-slate-200"}`}
                 >
                   {activeTab === tab && (
@@ -409,8 +519,8 @@ export default function Home() {
 
               {activeTab === "upload" ? (
                 <div className="space-y-6">
-                  <div className="group relative border-2 border-dashed border-slate-700 hover:border-indigo-500/50 rounded-[24px] p-10 transition-all bg-slate-950/30 flex flex-col items-center justify-center gap-4 cursor-pointer">
-                    <input type="file" accept="audio/*" onChange={handleFileChange} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
+                  <div className="group relative border-2 border-dashed border-slate-700 hover:border-indigo-500/50 rounded-[24px] p-10 transition-all bg-slate-950/30 flex flex-col items-center justify-center gap-4 cursor-pointer focus-within:ring-2 focus-within:ring-indigo-500">
+                    <input type="file" accept="audio/*" onChange={handleFileChange} className="absolute inset-0 opacity-0 cursor-pointer z-10" aria-label="Upload de áudio" />
                     <div className="p-4 bg-slate-800 rounded-full text-slate-400 group-hover:scale-110 group-hover:bg-indigo-500/20 group-hover:text-indigo-400 transition-all">
                       <FileAudio size={32} />
                     </div>
@@ -469,6 +579,7 @@ export default function Home() {
               <button
                 onClick={() => setShowSettings(!showSettings)}
                 className="w-full px-6 py-4 flex items-center justify-between text-slate-400 hover:text-white transition-colors"
+                aria-expanded={showSettings}
               >
                 <div className="flex items-center gap-2 font-bold text-[10px] uppercase tracking-widest">
                   <Settings2 size={14} /> Configurações de IA
@@ -480,11 +591,11 @@ export default function Home() {
                 {showSettings && (
                   <motion.div
                     initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }}
-                    className="px-6 pb-6 space-y-4"
+                    className="px-6 pb-6 space-y-4 overflow-hidden"
                   >
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase">Whisper Model</label>
-                      <select value={settings.transcriptionModel} onChange={e => setSettings({ ...settings, transcriptionModel: e.target.value })} disabled={loading} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-indigo-500">
+                      <label htmlFor="transcriptionModel" className="text-[10px] font-bold text-slate-500 uppercase">Whisper Model</label>
+                      <select id="transcriptionModel" value={settings.transcriptionModel} onChange={e => setSettings({ ...settings, transcriptionModel: e.target.value })} disabled={loading} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-indigo-500">
                         <option value="base">Base (Rápido)</option>
                         <option value="medium">Medium (Equilibrado)</option>
                         <option value="large-v3-turbo">Turbo v3 (Recomendado)</option>
@@ -492,16 +603,16 @@ export default function Home() {
                       </select>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase">LLM Local (Ollama)</label>
-                      <select value={settings.summarizationModel} onChange={e => setSettings({ ...settings, summarizationModel: e.target.value })} disabled={loading} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-indigo-500">
+                      <label htmlFor="summarizationModel" className="text-[10px] font-bold text-slate-500 uppercase">LLM Local (Ollama)</label>
+                      <select id="summarizationModel" value={settings.summarizationModel} onChange={e => setSettings({ ...settings, summarizationModel: e.target.value })} disabled={loading} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-indigo-500">
                         <option value="qwen3:4b">Qwen 3 4B</option>
                         <option value="llama3.2:3b">Llama 3.2 3B</option>
                         <option value="mistral:latest">Mistral</option>
                       </select>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase">Hardware</label>
-                      <select value={settings.device} onChange={e => setSettings({ ...settings, device: e.target.value })} disabled={loading} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-indigo-500">
+                      <label htmlFor="device" className="text-[10px] font-bold text-slate-500 uppercase">Hardware</label>
+                      <select id="device" value={settings.device} onChange={e => setSettings({ ...settings, device: e.target.value })} disabled={loading} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-indigo-500">
                         <option value="auto">Auto (GPU preferencial)</option>
                         <option value="cuda">Apenas GPU</option>
                         <option value="cpu">Apenas CPU</option>
@@ -528,6 +639,7 @@ export default function Home() {
                               else { audioRef.current?.pause(); setIsPlaying(false); }
                             }}
                             className="w-14 h-14 rounded-full bg-indigo-600 flex items-center justify-center text-white shadow-lg hover:scale-105 transition-all"
+                            aria-label={isPlaying ? "Pausar" : "Tocar"}
                           >
                             {isPlaying ? <Pause size={24} /> : <Play size={24} className="ml-1" />}
                           </button>
@@ -541,12 +653,22 @@ export default function Home() {
                               className="h-2 w-full bg-slate-950 rounded-full overflow-hidden cursor-pointer group"
                               onClick={(e) => {
                                 const rect = e.currentTarget.getBoundingClientRect();
-                                const pct = (e.clientX - rect.left) / rect.width;
+                                const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                                 if (audioRef.current) audioRef.current.currentTime = pct * audioDuration;
                               }}
+                              onKeyDown={(e) => {
+                                if (!audioRef.current) return;
+                                if (e.key === 'ArrowRight') audioRef.current.currentTime += 5;
+                                if (e.key === 'ArrowLeft') audioRef.current.currentTime -= 5;
+                              }}
+                              tabIndex={0}
+                              role="slider"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={audioProgress}
                             >
                               <div className="h-full bg-indigo-500 transition-all duration-100 relative" style={{ width: `${audioProgress}%` }}>
-                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full scale-0 group-hover:scale-100 transition-transform" />
+                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full scale-0 group-hover:scale-100 transition-transform shadow-sm" />
                               </div>
                             </div>
                           </div>
@@ -582,7 +704,7 @@ export default function Home() {
                           <BrainCircuit size={14} /> Resumo IA
                         </span>
                         {results && (
-                          <button onClick={() => copyToClipboard(displaySummary, 's')} className="text-slate-500 hover:text-white transition-colors">
+                          <button onClick={() => copyToClipboard(displaySummary, 's')} className="text-slate-500 hover:text-white transition-colors" aria-label="Copiar resumo">
                             {copiedStage === 's' ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
                           </button>
                         )}
@@ -612,7 +734,7 @@ export default function Home() {
                               onChange={(e) => setNewTaskText(e.target.value)}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' && newTaskText.trim()) {
-                                  setActionItems([{ text: newTaskText.trim(), checked: false, id: Date.now().toString() }, ...actionItems]);
+                                  setActionItems([{ text: newTaskText.trim(), checked: false, id: crypto.randomUUID() }, ...actionItems]);
                                   setNewTaskText("");
                                 }
                               }}
@@ -621,10 +743,10 @@ export default function Home() {
                             />
                             <button onClick={() => {
                               if (newTaskText.trim()) {
-                                setActionItems([{ text: newTaskText.trim(), checked: false, id: Date.now().toString() }, ...actionItems]);
+                                setActionItems([{ text: newTaskText.trim(), checked: false, id: crypto.randomUUID() }, ...actionItems]);
                                 setNewTaskText("");
                               }
-                            }} className="p-2 bg-emerald-600 rounded-xl hover:bg-emerald-500 transition-colors">
+                            }} className="p-2 bg-emerald-600 rounded-xl hover:bg-emerald-500 transition-colors" aria-label="Adicionar tarefa">
                               <Check size={18} />
                             </button>
                           </div>
@@ -637,11 +759,12 @@ export default function Home() {
                                   <button
                                     onClick={() => setActionItems(actionItems.map(i => i.id === item.id ? { ...i, checked: !i.checked } : i))}
                                     className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center transition-colors ${item.checked ? "bg-emerald-500 border-emerald-500" : "border-slate-600"}`}
+                                    aria-label={item.checked ? "Desmarcar tarefa" : "Marcar tarefa como concluída"}
                                   >
                                     {item.checked && <Check size={12} />}
                                   </button>
                                   <span className={`text-sm flex-1 ${item.checked ? "line-through text-slate-500" : "text-slate-300"}`}>{item.text}</span>
-                                  <button onClick={() => setActionItems(actionItems.filter(i => i.id !== item.id))} className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all">
+                                  <button onClick={() => setActionItems(actionItems.filter(i => i.id !== item.id))} className="opacity-0 focus:opacity-100 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all" aria-label="Excluir tarefa">
                                     <Trash2 size={14} />
                                   </button>
                                 </div>
@@ -653,7 +776,7 @@ export default function Home() {
 
                       {results && results.speaker_stats && Object.keys(results.speaker_stats).length > 0 && (
                         <div className="bg-slate-950/50 border border-slate-800 rounded-[24px] p-6">
-                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 block flex items-center gap-2"><Users size={14} /> Participantes e Tempo</span>
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2"><Users size={14} /> Participantes e Tempo</span>
                           <div className="flex flex-wrap gap-3">
                             {Object.entries(results.speaker_stats).map(([id, time]) => (
                               <div key={id} className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl group">
@@ -674,7 +797,7 @@ export default function Home() {
                                   )}
                                   <span className="text-[9px] text-slate-500">{Math.floor(time / 60)}m {Math.round(time % 60)}s</span>
                                 </div>
-                                <button onClick={() => { setEditingSpeaker(id); setTempName(speakerNames[id] || id); }} className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-indigo-400 transition-all ml-1">
+                                <button onClick={() => { setEditingSpeaker(id); setTempName(speakerNames[id] || id); }} className="opacity-0 focus:opacity-100 group-hover:opacity-100 text-slate-600 hover:text-indigo-400 transition-all ml-1" aria-label="Editar nome">
                                   <Edit3 size={12} />
                                 </button>
                               </div>
@@ -689,7 +812,7 @@ export default function Home() {
                     <div className="px-8 py-5 border-b border-slate-800 flex items-center justify-between">
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><FileText size={14} /> Transcrição Completa</span>
                       {results && (
-                        <button onClick={() => copyToClipboard(displayTranscription, 't')} className="text-slate-500 hover:text-white transition-colors">
+                        <button onClick={() => copyToClipboard(displayTranscription, 't')} className="text-slate-500 hover:text-white transition-colors" aria-label="Copiar transcrição">
                           {copiedStage === 't' ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
                         </button>
                       )}
@@ -698,17 +821,17 @@ export default function Home() {
                       {groupedSegments.length > 0 ? (
                         <div className="space-y-8">
                           {groupedSegments.map((seg, idx) => (
-                            <div key={idx} className="flex gap-6 group">
+                            <div key={`seg-${idx}`} className="flex gap-6 group">
                               <div className="flex-shrink-0 w-24 text-right">
                                 <span className="text-[10px] font-mono text-slate-600">{Math.floor(seg.start / 60)}:{(seg.start % 60).toFixed(0).padStart(2, '0')}</span>
                                 <p className="text-[10px] font-black text-indigo-500/50 uppercase truncate mt-1">{speakerNames[seg.speaker] || seg.speaker}</p>
                               </div>
                               <div className="flex-1 pb-6 border-b border-slate-800/50 group-last:border-none flex flex-wrap text-[15px] leading-relaxed tracking-tight">
-                                {seg.words ? seg.words.map((w: any, wIdx: number) => {
+                                {seg.words && seg.words.length > 0 ? seg.words.map((w, wIdx) => {
                                   const isActive = audioCurrentTime >= w.start && audioCurrentTime <= w.end;
                                   return (
                                     <span
-                                      key={wIdx}
+                                      key={`word-${idx}-${wIdx}`}
                                       onClick={() => { if (audioRef.current) audioRef.current.currentTime = w.start; }}
                                       className={`transition-all duration-150 cursor-pointer mr-0.5 rounded px-0.5 inline-block ${isActive ? "bg-indigo-500 text-white font-bold shadow-lg shadow-indigo-600/30 scale-105 z-10" : "text-slate-400 hover:text-white hover:bg-slate-700/50"}`}
                                     >
@@ -746,27 +869,28 @@ export default function Home() {
       <AnimatePresence>
         {showHistory && (
           <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowHistory(false)} className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100]" />
-            <motion.div initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-950 border-l border-slate-800 z-[101] p-8 flex flex-col">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowHistory(false)} className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100]" aria-hidden="true" />
+            <motion.div initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-950 border-l border-slate-800 z-[101] p-8 flex flex-col shadow-2xl">
               <div className="flex items-center justify-between mb-8">
                 <h2 className="text-xl font-black flex items-center gap-2"><History className="text-indigo-500" /> HISTÓRICO LOCAL</h2>
-                <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-slate-900 rounded-full"><XCircle size={20} /></button>
+                <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-slate-900 rounded-full" aria-label="Fechar histórico"><XCircle size={20} /></button>
               </div>
               <div className="space-y-4 overflow-y-auto flex-1 pr-2 custom-scrollbar">
                 {history.length === 0 ? (
                   <p className="text-center text-slate-500 text-sm mt-10">Nenhum histórico salvo.</p>
                 ) : (
                   history.map((item) => (
-                    <div key={item.id} onClick={() => loadFromHistory(item)} className="p-5 bg-slate-900/50 border border-slate-800 rounded-2xl hover:border-indigo-500/50 cursor-pointer transition-all group relative">
+                    <div key={item.id} onClick={() => loadFromHistory(item)} className="p-5 bg-slate-900/50 border border-slate-800 rounded-2xl hover:border-indigo-500/50 cursor-pointer transition-all group relative focus-within:ring-2 focus-within:ring-indigo-500" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && loadFromHistory(item)}>
                       <div className="flex justify-between items-center mb-2">
                         <span className="text-[9px] font-bold text-indigo-400 uppercase">{new Date(item.timestamp).toLocaleString()}</span>
                       </div>
-                      <h4 className="font-bold text-slate-200 truncate">{item.summary?.split('\n')[0].replace(/#/g, '') || "Reunião"}</h4>
+                      <h4 className="font-bold text-slate-200 truncate pr-6">{item.summary?.split('\n')[0].replace(/#/g, '') || "Reunião"}</h4>
                       <p className="text-[10px] text-slate-500 mt-1">{item.word_count || 0} palavras • {Math.floor((item.duration || 0) / 60)}m</p>
 
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteHistoryItem(item.id); }}
-                        className="absolute top-4 right-4 p-1.5 bg-slate-800 rounded opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-all"
+                        className="absolute top-4 right-4 p-1.5 bg-slate-800 rounded opacity-0 focus:opacity-100 group-hover:opacity-100 text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-all"
+                        aria-label="Deletar item do histórico"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -779,23 +903,13 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      <style jsx global>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #334155; }
-        .prose h1, .prose h2 { color: #818cf8; font-weight: 800; font-size: 1.25rem; margin-top: 1.5rem; }
-        .prose p { color: #94a3b8; line-height: 1.6; margin-bottom: 1rem; }
-        .prose li { color: #cbd5e1; margin-bottom: 0.5rem; }
-        .prose strong { color: #f8fafc; }
-      `}</style>
     </div>
   );
 }
 
 function StageProgress({ label, value }: { label: string, value: number }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5" aria-label={`Progresso: ${label}`} aria-valuenow={value} aria-valuemin={0} aria-valuemax={100} role="progressbar">
       <div className="flex justify-between text-[9px] font-black uppercase tracking-widest text-slate-500">
         <span>{label}</span>
         <span className={value === 100 ? "text-emerald-500" : "text-indigo-400"}>{value}%</span>
@@ -807,7 +921,7 @@ function StageProgress({ label, value }: { label: string, value: number }) {
   );
 }
 
-function StatBlock({ icon, label, value, color }: { icon: any, label: string, value: any, color: string }) {
+function StatBlock({ icon, label, value, color }: { icon: React.ReactNode, label: string, value: string | number, color: string }) {
   return (
     <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl flex flex-col items-center justify-center text-center">
       <div className={`${color} mb-1 opacity-80`}>{icon}</div>
