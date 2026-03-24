@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+faster-whisper
+python-multipart
+# Novas dependências para diarização (Identificação de Falantes)
+torch
+torchaudio
+speechbrain
+scikit-learn
+librosa
+huggingface_hub<1.0
