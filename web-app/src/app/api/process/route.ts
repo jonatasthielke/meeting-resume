@@ -3,10 +3,16 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
+    const workerPort = process.env.WORKER_PORT || '8000';
+    const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+    const defaultWhisperModel = process.env.WHISPER_MODEL || 'large-v3-turbo';
+    const defaultSummaryModel = process.env.SUMMARY_MODEL || 'qwen2.5:3b';
+    const defaultDevice = process.env.DEVICE || 'auto';
+
     const audioFile = formData.get('audio') as Blob;
-    const modelTranscription = (formData.get('modelTranscription') as string) || 'large-v3-turbo';
-    const modelSummary = (formData.get('modelSummary') as string) || 'qwen2.5:3b';
-    const device = (formData.get('device') as string) || 'auto';
+    const modelTranscription = (formData.get('modelTranscription') as string) || defaultWhisperModel;
+    const modelSummary = (formData.get('modelSummary') as string) || defaultSummaryModel;
+    const device = (formData.get('device') as string) || defaultDevice;
 
     if (!audioFile) {
       return NextResponse.json({ error: 'Audio file is required' }, { status: 400 });
@@ -21,7 +27,7 @@ export async function POST(req: NextRequest) {
     // Assuming the user sends it with "audio" field
     workerFormData.append('file', audioFile, 'recording.webm');
 
-    const transcriptionResponse = await fetch(`http://localhost:8000/transcribe?model_name=${modelTranscription}&device=${device}`, {
+    const transcriptionResponse = await fetch(`http://localhost:${workerPort}/transcribe?model_name=${modelTranscription}&device=${device}`, {
       method: 'POST',
       body: workerFormData,
       signal: AbortSignal.timeout(600000), // 10 minutes
@@ -49,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     const updateProgress = async (value: number, status: string) => {
         try {
-            await fetch('http://localhost:8000/update-progress', {
+            await fetch(`http://localhost:${workerPort}/update-progress`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ stage: 'summarization', value, status })
@@ -67,7 +73,7 @@ export async function POST(req: NextRequest) {
     let summary = "";
     try {
         // 2a. Check if model exists, if not pull it
-        const checkResponse = await fetch('http://localhost:11434/api/show', {
+        const checkResponse = await fetch(`${ollamaBaseUrl}/api/show`, {
             method: 'POST',
             body: JSON.stringify({ name: modelSummary }),
             signal: AbortSignal.timeout(30000), // 30 seconds for initial check
@@ -77,7 +83,7 @@ export async function POST(req: NextRequest) {
             console.log(`Model ${modelSummary} not found. Pulling...`);
             await updateProgress(10, `Baixando modelo ${modelSummary} (isso pode demorar)...`);
             
-            const pullResponse = await fetch('http://localhost:11434/api/pull', {
+            const pullResponse = await fetch(`${ollamaBaseUrl}/api/pull`, {
                 method: 'POST',
                 body: JSON.stringify({ name: modelSummary, stream: false }),
                 signal: AbortSignal.timeout(600000), // 10 minutes for model pull
@@ -91,7 +97,7 @@ export async function POST(req: NextRequest) {
 
         await updateProgress(40, "Gerando resumo estruturado...");
         
-        const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
+        const ollamaResponse = await fetch(`${ollamaBaseUrl}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

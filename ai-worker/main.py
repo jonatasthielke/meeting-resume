@@ -17,6 +17,12 @@ from dataclasses import dataclass, field
 from typing import Generator
 from collections import Counter
 
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente do diretório raiz
+# Como o worker está em /ai-worker, buscamos o .env em ../
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 import numpy as np
 import torch
 import torchaudio
@@ -80,13 +86,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL = "large-v3-turbo"
+DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 SAMPLE_RATE = 16_000
 WINDOW_SIZE_S = 1.5           # Time in seconds for each window
 WINDOW_STEP_S = 0.75          # Time in seconds for the sliding overlap
 DIARIZATION_MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
 DIARIZATION_SAVEDIR = "pretrained_models/spkrec-ecapa-voxceleb"
-WHISPER_MODELS_DIR = "./models"
+WHISPER_MODELS_DIR = os.getenv("WHISPER_MODELS_DIR", "./models")
 CLUSTER_DISTANCE_THRESHOLD = 0.60  # Lowered to avoid merging distinct speakers too aggressively
 DIARIZATION_ENABLED = False
 _classifier = None
@@ -101,6 +107,14 @@ def resolve_device(requested: str = "auto") -> str:
     if requested == "cpu":
         return "cpu"
     
+    # Check env before auto detection
+    env_device = os.getenv("DEVICE", "auto").lower()
+    if env_device in ("cuda", "gpu", "cpu"):
+        if env_device != "cpu" and not torch.cuda.is_available():
+            log.warning("CUDA requested via .env but not available. Falling back to auto.")
+        else:
+            return "cuda" if env_device != "cpu" else "cpu"
+
     # Auto detection: prefer CUDA
     return "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -689,5 +703,6 @@ def _process_audio(
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    port = int(os.getenv("WORKER_PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

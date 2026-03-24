@@ -26,7 +26,7 @@ export default function Home() {
   const [previewText, setPreviewText] = useState("");
   const [settings, setSettings] = useState({
     transcriptionModel: "large-v3-turbo",
-    summarizationModel: "qwen2.5:3b",
+    summarizationModel: "qwen3:4b",
     device: "auto"
   });
   const [results, setResults] = useState<{ 
