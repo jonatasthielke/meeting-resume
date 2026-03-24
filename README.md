@@ -4,9 +4,26 @@ Este projeto é uma ferramenta de transcrição e resumo de reuniões que roda i
 
 ## 🏗️ Estrutura do Projeto
 
-- **ai-worker**: Backend em Python (FastAPI) que usa o `faster-whisper` para transcrição de áudio em altíssima velocidade.
-- **ollama**: Motor de IA local para gerar resumos inteligentes usando modelos como `qwen2.5:3b`.
-- **web-app**: Interface moderna em Next.js 15+ que orquestra todo o processo.
+- **ai-worker**: Backend em Python (FastAPI) que usa o `faster-whisper` para transcrição de áudio em altíssima velocidade e `SpeechBrain` para identificação de falantes (diarização).
+- **ollama**: Motor de IA local para gerar resumos inteligentes usando modelos como `qwen3:4b`.
+- **web-app**: Interface moderna em Next.js 15+ que orquestra todo o processo, com player de áudio integrado e gerenciamento de tarefas.
+
+---
+
+## ⚙️ Configuração (Variáveis de Ambiente)
+
+O projeto utiliza um arquivo `.env` na raiz para centralizar as configurações.
+
+1. Copie o arquivo de exemplo:
+   ```bash
+   cp .env.example .env
+   ```
+2. Ajuste as variáveis conforme necessário:
+   - `WORKER_PORT`: Porta do backend Python (padrão 8000).
+   - `WHISPER_MODEL`: Modelo do Whisper (ex: `large-v3-turbo`).
+   - `DEVICE`: Dispositivo de execução (`cuda`, `cpu` ou `auto`).
+   - `OLLAMA_BASE_URL`: URL do seu Ollama local.
+   - `SUMMARY_MODEL`: Modelo usado para resumos (Recomendado: `qwen3:4b`).
 
 ---
 
@@ -45,26 +62,26 @@ python -m venv venv
 .\venv\Scripts\activate
 
 # Instalar dependências
-pip install fastapi uvicorn faster-whisper python-multipart
+pip install -r requirements.txt
 ```
 
 **Para rodar:**
 ```powershell
 python main.py
 ```
-O servidor rodará em `http://localhost:8000`.
+O servidor rodará na porta definida no seu `.env` (padrão `http://localhost:8000`).
 
 ---
 
 ### 2. Texto e Inteligência (Ollama)
 
 1. Baixe o Ollama em: [ollama.com](https://ollama.com/)
-2. Após instalar, abra seu terminal e baixe o modelo otimizado para português:
+2. Após instalar, abra seu terminal e baixe o modelo otimizado configurado no seu `.env`:
 
 ```bash
-ollama run qwen2.5:3b
+ollama run qwen3:4b
 ```
-Certifique-se de que o Ollie está rodando em segundo plano (porta 11434).
+Certifique-se de que o Ollama está rodando em segundo plano (porta 11434).
 
 ---
 
@@ -86,16 +103,22 @@ Acesse `http://localhost:3000`.
 
 ---
 
-## 🚀 Como usar
+## 🚀 Funcionalidades Principais
 
-1.  **Modo Arquivo**: Faça o upload de arquivos de áudio existentes para transcrição e resumo instantâneo.
-2.  **Modo Ao Vivo (NOVO)**: Use o microfone para gravar sua reunião. O sistema transcreverá seu áudio a cada 5 segundos enquanto você fala. Ao finalizar, ele gerará automaticamente o resumo estruturado.
+1.  **Modo Arquivo**: Upload de áudios (MP3, WAV, M4A) com transcrição e diarização (quem falou o quê).
+2.  **Modo Ao Vivo**: Gravação via microfone com transcrição em tempo real (atualizada a cada 10s).
+3.  **Resumo Estruturado**: Geração automática de Título, Participantes, Pontos Principais e Checklist de Ações.
+4.  **Player Integrado**: Ouça o áudio original enquanto revisa a transcrição.
+5.  **Gestão de Tarefas**: Checklist interativo extraído da reunião para acompanhamento de próximos passos.
+6.  **Histórico Local**: Suas últimas reuniões ficam salvas localmente no navegador.
+
+---
 
 ## 💡 Notas de Hardware
 
-- **GPU NVIDIA**: O `faster-whisper` tentará usar CUDA automaticamente se detectado e configurado (requer drivers NVIDIA e cuDNN). 
-- **CPU**: Se não houver GPU, o sistema usará a CPU de forma otimizada (int8 quantization).
-- **Modelo de Áudio**: Usamos o `large-v3-turbo` por padrão, que oferece um equilíbrio incrível entre precisão e velocidade.
+- **Aceleração CUDA**: O sistema detecta automaticamente GPUs NVIDIA para acelerar tanto a transcrição quanto a diarização.
+- **Diarização (Speakers)**: Requer drivers de áudio funcionais e pode levar alguns segundos extras no processamento final para mapear as vozes.
+- **Privacidade**: Nenhum dado de áudio ou texto sai da sua máquina. O processamento é 100% offline.
 
 ---
 *Desenvolvido com foco em privacidade e performance local.*
