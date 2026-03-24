@@ -67,9 +67,9 @@ export default function Home() {
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
 
-  // Task List Extraction
-  const [actionItems, setActionItems] = useState<string[]>([]);
-  const [checkedItems, setCheckedItems] = useState<Record<number, boolean>>({});
+  // Task List State
+  const [actionItems, setActionItems] = useState<Array<{ text: string, checked: boolean, id: string }>>([]);
+  const [newTaskText, setNewTaskText] = useState("");
 
   useEffect(() => {
     const saved = localStorage.getItem("meeting_history");
@@ -293,22 +293,49 @@ export default function Home() {
     if (!summary) return;
     const lines = summary.split('\n');
     let inActionSection = false;
-    const items: string[] = [];
+    const items: Array<{ text: string, checked: boolean, id: string }> = [];
 
     lines.forEach(line => {
-      if (line.includes('## ⚡ Decisões') || line.includes('Próximos Passos') || line.includes('Action Items')) {
+      if (line.includes('Checklist') || line.includes('Decisões') || line.includes('Próximos Passos') || line.includes('Action Items')) {
         inActionSection = true;
       } else if (line.startsWith('## ') && inActionSection) {
         inActionSection = false;
-      } else if (inActionSection && (line.trim().startsWith('-') || line.trim().startsWith('*'))) {
-        items.push(line.replace(/^[-*]\s*/, '').trim());
+      } else if (inActionSection && (line.trim().startsWith('-') || line.trim().startsWith('*') || line.includes('[ ]'))) {
+        const cleanText = line.replace(/^([-*]|\[ \])\s*/, '').replace(/\[ \]/g, '').trim();
+        if (cleanText && cleanText.length > 3) {
+          items.push({ 
+            text: cleanText, 
+            checked: false, 
+            id: Math.random().toString(36).substr(2, 9) 
+          });
+        }
       }
     });
 
     if (items.length > 0) {
       setActionItems(items);
-      setCheckedItems({});
     }
+  };
+
+  const addTask = () => {
+    if (newTaskText.trim()) {
+      setActionItems([...actionItems, { 
+        text: newTaskText.trim(), 
+        checked: false, 
+        id: Math.random().toString(36).substr(2, 9) 
+      }]);
+      setNewTaskText("");
+    }
+  };
+
+  const toggleTask = (id: string) => {
+    setActionItems(actionItems.map(item => 
+      item.id === id ? { ...item, checked: !item.checked } : item
+    ));
+  };
+
+  const deleteTask = (id: string) => {
+    setActionItems(actionItems.filter(item => item.id !== id));
   };
 
   const deleteHistoryItem = (id: number) => {
@@ -715,34 +742,69 @@ export default function Home() {
                   )}
 
                   {/* Action Items / Checklist */}
-                  {actionItems.length > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.98 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="bg-gradient-to-br from-emerald-900/20 to-slate-900/40 backdrop-blur-xl border border-emerald-500/20 rounded-[32px] overflow-hidden"
-                    >
-                      <div className="px-8 py-5 border-b border-emerald-500/10 flex items-center justify-between bg-white/5">
-                        <div className="flex items-center gap-3 text-emerald-400">
-                          <ListChecks className="w-4 h-4" />
-                          <span className="font-bold text-xs uppercase tracking-widest text-slate-300">Lista de Tarefas (Extraída)</span>
-                        </div>
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.98 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="bg-gradient-to-br from-emerald-900/10 to-slate-900/40 backdrop-blur-xl border border-emerald-500/20 rounded-[32px] overflow-hidden"
+                  >
+                    <div className="px-8 py-5 border-b border-emerald-500/10 flex items-center justify-between bg-white/5">
+                      <div className="flex items-center gap-3 text-emerald-400">
+                        <ListChecks className="w-5 h-5" />
+                        <span className="font-bold text-xs uppercase tracking-widest text-slate-300">Plano de Ação e Tarefas</span>
                       </div>
-                      <div className="p-8 space-y-3">
-                        {actionItems.map((item, idx) => (
-                          <div 
-                            key={idx} 
-                            onClick={() => setCheckedItems({ ...checkedItems, [idx]: !checkedItems[idx] })}
-                            className={`flex items-start gap-4 p-4 rounded-2xl border transition-all cursor-pointer ${checkedItems[idx] ? "bg-emerald-500/5 border-emerald-500/30 opacity-60" : "bg-slate-900/40 border-slate-700/30 hover:border-emerald-500/30"}`}
-                          >
-                            <div className={`mt-1 w-5 h-5 rounded-md flex items-center justify-center transition-all ${checkedItems[idx] ? "bg-emerald-500 text-white" : "border-2 border-slate-600"}`}>
-                              {checkedItems[idx] && <Check className="w-3 h-3" />}
-                            </div>
-                            <p className={`text-sm font-medium ${checkedItems[idx] ? "line-through text-slate-500" : "text-slate-200"}`}>{item}</p>
+                    </div>
+                    
+                    <div className="p-8 space-y-6">
+                      {/* Add New Task */}
+                      <div className="relative group">
+                        <input 
+                          type="text" 
+                          value={newTaskText}
+                          onChange={(e) => setNewTaskText(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && addTask()}
+                          placeholder="Adicionar tarefa manual..."
+                          className="w-full bg-slate-900/50 border border-slate-700/50 rounded-2xl px-6 py-4 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all placeholder:text-slate-600 pr-16"
+                        />
+                        <button 
+                          onClick={addTask}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-emerald-500 text-white rounded-xl hover:bg-emerald-400 transition-all shadow-lg shadow-emerald-500/20"
+                        >
+                           <RefreshCw className="w-4 h-4 rotate-45" />
+                        </button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {actionItems.length === 0 ? (
+                          <div className="text-center py-6 text-slate-600 italic text-sm">
+                             Nenhuma tarefa identificada. Use o campo acima para adicionar.
                           </div>
-                        ))}
+                        ) : (
+                          actionItems.map((item) => (
+                            <div 
+                              key={item.id} 
+                              className={`group relative flex items-start gap-4 p-4 rounded-2xl border transition-all ${item.checked ? "bg-emerald-500/5 border-emerald-500/30 opacity-60" : "bg-slate-900/40 border-slate-700/30 hover:border-emerald-500/30 shadow-lg hover:shadow-emerald-500/5"}`}
+                            >
+                              <div 
+                                onClick={() => toggleTask(item.id)}
+                                className={`mt-1 w-6 h-6 rounded-lg flex items-center justify-center transition-all cursor-pointer ${item.checked ? "bg-emerald-500 text-white" : "border-2 border-slate-600 hover:border-emerald-400"}`}
+                              >
+                                {item.checked && <Check className="w-4 h-4" />}
+                              </div>
+                              <p className={`flex-1 text-[15px] font-medium leading-relaxed ${item.checked ? "line-through text-slate-500" : "text-slate-200"}`}>
+                                {item.text}
+                              </p>
+                              <button 
+                                onClick={() => deleteTask(item.id)}
+                                className="opacity-0 group-hover:opacity-100 p-2 text-slate-600 hover:text-red-400 transition-all rounded-lg"
+                              >
+                                 <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))
+                        )}
                       </div>
-                    </motion.div>
-                  )}
+                    </div>
+                  </motion.div>
                   {results && results.speaker_stats && Object.keys(results.speaker_stats).length > 0 && (
                     <motion.div
                        initial={{ opacity: 0, scale: 0.98 }}

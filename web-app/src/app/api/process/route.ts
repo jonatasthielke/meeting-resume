@@ -101,13 +101,13 @@ O texto abaixo é uma transcrição de uma reunião. Suas tarefas são:
 1. Identificar o tema principal da reunião.
 2. Listar os participantes mencionados (Oradores).
 3. Resumir os pontos principais em tópicos (bullet points).
-4. Destacar decisões tomadas e próximos passos (Action Items).
+4. Criar um checklist claro de ações que devem ser feitas (Próximos Passos).
 
 Use Markdown para formatar a resposta da seguinte forma:
 # 📝 Título da Reunião
 ## 👥 Participantes
 ## 📌 Pontos Principais
-## ⚡ Decisões e Próximos Passos
+## ✅ Checklist de Ações (Próximos Passos)
 
 Transcrição:
 ${text}
