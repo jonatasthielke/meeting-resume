@@ -14,6 +14,7 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import threading
 from typing import Generator
 from collections import Counter
 
@@ -103,7 +104,10 @@ _classifier = None
 
 def resolve_device(requested: str = "auto") -> str:
     if requested in ("cuda", "gpu"):
-        return "cuda"
+        if torch.cuda.is_available():
+            return "cuda"
+        log.warning("CUDA requested but not available. Falling back to CPU.")
+        return "cpu"
     if requested == "cpu":
         return "cpu"
     
@@ -113,10 +117,14 @@ def resolve_device(requested: str = "auto") -> str:
         if env_device != "cpu" and not torch.cuda.is_available():
             log.warning("CUDA requested via .env but not available. Falling back to auto.")
         else:
-            return "cuda" if env_device != "cpu" else "cpu"
+            if env_device != "cpu":
+                return "cuda"
+            return "cpu"
 
     # Auto detection: prefer CUDA
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    log.info(f"Hardware auto-detected: {device.upper()}")
+    return device
 
 
 def compute_type_for(device: str) -> str:
@@ -134,6 +142,7 @@ class WhisperState:
     model_name: str = ""
     device: str = ""
     compute_type: str = ""
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def matches(self, model_name: str, device: str, compute_type: str) -> bool:
         return (
@@ -161,74 +170,88 @@ def get_whisper_model(model_name: str = DEFAULT_MODEL, device: str = "auto") -> 
     device = resolve_device(device)
     ctype = compute_type_for(device)
 
-    if _whisper.matches(model_name, device, ctype):
+    with _whisper.lock:
+        if _whisper.matches(model_name, device, ctype):
+            return _whisper.model, device
+
+        _whisper.unload()
+
+        log.info("Loading Whisper: model=%s device=%s compute=%s", model_name, device, ctype)
+        try:
+            _whisper.model = WhisperModel(
+                model_name, device=device, compute_type=ctype, download_root=WHISPER_MODELS_DIR
+            )
+            _whisper.model_name = model_name
+            _whisper.device = device
+            _whisper.compute_type = ctype
+        except Exception as exc:
+            # If it failed on CUDA, attempt CPU fallback. If it was already on CPU, just fail.
+            if device == "cuda":
+                log.error("Failed to load on CUDA (%s). Trying fallback to CPU/int8: %s", ctype, exc)
+                try:
+                    _whisper.model = WhisperModel(
+                        model_name, device="cpu", compute_type="int8", download_root=WHISPER_MODELS_DIR
+                    )
+                    _whisper.model_name = model_name
+                    _whisper.device = "cpu"
+                    _whisper.compute_type = "int8"
+                    device = "cpu"
+                except Exception as final_exc:
+                    log.error("Critical fallback failure on CPU: %s", final_exc)
+                    raise final_exc
+            else:
+                log.error("Failed to load on CPU: %s", exc)
+                raise exc
+
         return _whisper.model, device
-
-    _whisper.unload()
-
-    log.info("Loading Whisper: model=%s device=%s compute=%s", model_name, device, ctype)
-    try:
-        _whisper.model = WhisperModel(
-            model_name, device=device, compute_type=ctype, download_root=WHISPER_MODELS_DIR
-        )
-        _whisper.model_name = model_name
-        _whisper.device = device
-        _whisper.compute_type = ctype
-    except Exception as exc:
-        log.error("Failed to load on %s (%s). Falling back to CPU/int8: %s", device, ctype, exc)
-        device, ctype = "cpu", "int8"
-        _whisper.model = WhisperModel(
-            model_name, device="cpu", compute_type="int8", download_root=WHISPER_MODELS_DIR
-        )
-        _whisper.model_name = model_name
-        _whisper.device = device
-        _whisper.compute_type = ctype
-
-    return _whisper.model, device
 
 # ---------------------------------------------------------------------------
 # SpeechBrain diarization
 # ---------------------------------------------------------------------------
 
 _active_diarization_device = "cpu"
+_diarization_lock = threading.Lock()
 
 def _load_diarization_model() -> None:
     global _classifier, DIARIZATION_ENABLED, _active_diarization_device
-    if not DIARIZATION_AVAILABLE:
-        log.warning("SpeechBrain not available, skipping diarization loader.")
-        return
-    
-    # We try CUDA first if possible
-    device = resolve_device("cuda")
-    log.info("Attempting to load SpeechBrain on %s …", device)
-    
-    try:
-        _classifier = EncoderClassifier.from_hparams(
-            source=DIARIZATION_MODEL_SOURCE,
-            savedir=DIARIZATION_SAVEDIR,
-            run_opts={"device": device},
-        )
-        _active_diarization_device = device
-        DIARIZATION_ENABLED = True
-        log.info(f"SpeechBrain loaded successfully on {device}")
-    except Exception as exc:
-        if device == "cuda":
-            log.warning(f"Failed to load SpeechBrain on GPU, falling back to CPU: {exc}")
-            try:
-                _classifier = EncoderClassifier.from_hparams(
-                    source=DIARIZATION_MODEL_SOURCE,
-                    savedir=DIARIZATION_SAVEDIR,
-                    run_opts={"device": "cpu"},
-                )
-                _active_diarization_device = "cpu"
-                DIARIZATION_ENABLED = True
-                log.info("SpeechBrain loaded on CPU fallback.")
-            except Exception as e2:
-                log.error(f"Critical failure loading SpeechBrain even on CPU: {e2}")
+    with _diarization_lock:
+        if DIARIZATION_ENABLED and _classifier is not None:
+             return
+        if not DIARIZATION_AVAILABLE:
+            log.warning("SpeechBrain not available, skipping diarization loader.")
+            return
+        
+        # We try CUDA first if possible
+        device = resolve_device("cuda")
+        log.info("Attempting to load SpeechBrain on %s …", device)
+        
+        try:
+            _classifier = EncoderClassifier.from_hparams(
+                source=DIARIZATION_MODEL_SOURCE,
+                savedir=DIARIZATION_SAVEDIR,
+                run_opts={"device": device},
+            )
+            _active_diarization_device = device
+            DIARIZATION_ENABLED = True
+            log.info(f"SpeechBrain loaded successfully on {device}")
+        except Exception as exc:
+            if device == "cuda":
+                log.warning(f"Failed to load SpeechBrain on GPU, falling back to CPU: {exc}")
+                try:
+                    _classifier = EncoderClassifier.from_hparams(
+                        source=DIARIZATION_MODEL_SOURCE,
+                        savedir=DIARIZATION_SAVEDIR,
+                        run_opts={"device": "cpu"},
+                    )
+                    _active_diarization_device = "cpu"
+                    DIARIZATION_ENABLED = True
+                    log.info("SpeechBrain loaded on CPU fallback.")
+                except Exception as e2:
+                    log.error(f"Critical failure loading SpeechBrain even on CPU: {e2}")
+                    DIARIZATION_ENABLED = False
+            else:
+                log.error(f"SpeechBrain load failed — diarization disabled: {exc}")
                 DIARIZATION_ENABLED = False
-        else:
-            log.error(f"SpeechBrain load failed — diarization disabled: {exc}")
-            DIARIZATION_ENABLED = False
 
 
 def extract_embeddings_full(audio_path: str) -> tuple[list[np.ndarray], list[tuple[float, float]]]:
@@ -421,6 +444,22 @@ app.add_middleware(
 @app.get("/progress")
 def get_progress() -> dict:
     return _progress.as_dict()
+
+
+@app.get("/status")
+def get_status() -> dict:
+    import torch
+    cuda_available = torch.cuda.is_available()
+    gpu_name = torch.cuda.get_device_name(0) if cuda_available else None
+    
+    return {
+        "status": "ready",
+        "cuda_available": cuda_available,
+        "gpu_name": gpu_name,
+        "device": "cuda" if cuda_available else "cpu",
+        "platform": sys.platform,
+        "diarization_enabled": DIARIZATION_ENABLED
+    }
 
 
 @app.post("/update-progress")

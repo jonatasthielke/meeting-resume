@@ -3,7 +3,9 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
+    const aiWorkerHost = process.env.AI_WORKER_HOST || 'localhost';
     const workerPort = process.env.WORKER_PORT || '8000';
+    const workerUrl = `http://${aiWorkerHost}:${workerPort}`;
     const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
     const defaultWhisperModel = process.env.WHISPER_MODEL || 'large-v3-turbo';
     const defaultSummaryModel = process.env.SUMMARY_MODEL || 'qwen2.5:3b';
@@ -27,7 +29,7 @@ export async function POST(req: NextRequest) {
     // Assuming the user sends it with "audio" field
     workerFormData.append('file', audioFile, 'recording.webm');
 
-    const transcriptionResponse = await fetch(`http://localhost:${workerPort}/transcribe?model_name=${modelTranscription}&device=${device}`, {
+    const transcriptionResponse = await fetch(`${workerUrl}/transcribe?model_name=${modelTranscription}&device=${device}`, {
       method: 'POST',
       body: workerFormData,
       signal: AbortSignal.timeout(600000), // 10 minutes
@@ -55,7 +57,7 @@ export async function POST(req: NextRequest) {
 
     const updateProgress = async (value: number, status: string) => {
         try {
-            await fetch(`http://localhost:${workerPort}/update-progress`, {
+            await fetch(`${workerUrl}/update-progress`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ stage: 'summarization', value, status })
@@ -84,10 +86,12 @@ Use Markdown para formatar a resposta da seguinte forma:
 ## 📌 Pontos Principais
 ## ✅ Checklist de Ações (Próximos Passos)
 
+Responda SEMPRE em Português do Brasil (PT-BR) de forma profissional.
+
 Transcrição:
 ${text}
 
-Resumo Estruturado:`;
+Resumo Estruturado (EM PORTUGUÊS):`;
 
     console.log(`--- Step 2: Summarizing with ${summaryProvider} ---`);
     let summary = "";
@@ -159,15 +163,46 @@ Resumo Estruturado:`;
             body: JSON.stringify({
               model: modelSummary,
               prompt: promptTemplate,
-              stream: false,
+              stream: true, // Habilitar streaming para progresso granular
+              keep_alive: 0,
             }),
             signal: AbortSignal.timeout(600000),
           });
 
-          if (ollamaResponse.ok) {
-              const ollamaData = await ollamaResponse.json();
-              summary = ollamaData.response;
-              await updateProgress(100, "Concluído!");
+          if (ollamaResponse.ok && ollamaResponse.body) {
+              const reader = ollamaResponse.body.getReader();
+              const decoder = new TextDecoder();
+              let fullSummary = "";
+              let chunksReceived = 0;
+
+              while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+
+                  const chunk = decoder.decode(value, { stream: true });
+                  const lines = chunk.split('\n');
+
+                  for (const line of lines) {
+                      if (!line.trim()) continue;
+                      try {
+                          const json = JSON.parse(line);
+                          if (json.response) {
+                              fullSummary += json.response;
+                              chunksReceived++;
+                              
+                              // Atualiza progresso a cada 10 tokens (evita excesso de requests)
+                              if (chunksReceived % 10 === 0) {
+                                  // Calcula progresso fake de 40 a 95 enquanto gera
+                                  const progScale = Math.min(95, 40 + Math.floor(chunksReceived / 4));
+                                  await updateProgress(progScale, "Escrevendo resumo de IA...");
+                              }
+                          }
+                          if (json.done) break;
+                      } catch (e) { /* ignore parse errors for partial chunks */ }
+                  }
+              }
+              summary = fullSummary;
+              await updateProgress(100, "Resumo concluído!");
           } else {
               summary = `⚠️ **Erro ao conectar com Ollama.**\nCertifique-se de que o Ollama está rodando localmente com o modelo \`${modelSummary}\`.`;
           }

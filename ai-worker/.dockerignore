@@ -1,0 +1,12 @@
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.db
+.ipynb_checkpoints
+models/*
+pretrained_models/*
+.env
+.git
+.gitignore

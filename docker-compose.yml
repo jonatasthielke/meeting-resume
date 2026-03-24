@@ -1,0 +1,70 @@
+services:
+  # --- Ollama Service (Local AI Inference) ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: m-resume-ollama
+    volumes:
+      - ollama_storage:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    # Uncomment deploy section below for GPU support (requires NVIDIA container toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # --- AI Worker Service (Transcription & Diarization) ---
+  ai-worker:
+    build:
+      context: ./ai-worker
+      dockerfile: Dockerfile
+    container_name: m-resume-worker
+    volumes:
+      - ai_worker_models:/app/models
+      - ai_worker_pretrained:/app/pretrained_models
+      # Mount the root .env to the app directory inside the container
+      - ./.env:/app/.env
+    ports:
+      - "8000:8000"
+    environment:
+      - WORKER_PORT=8000
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    # Same as above for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # --- Web App Service (Frontend & Orchestrator) ---
+  web-app:
+    build:
+      context: ./web-app
+      dockerfile: Dockerfile
+    container_name: m-resume-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - AI_WORKER_HOST=ai-worker
+      - WORKER_PORT=8000
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      # Optional: pass root .env to let Web-App read it (already configured via environment vars above)
+      - ./.env:/app/.env
+    depends_on:
+      - ai-worker
+    restart: unless-stopped
+
+volumes:
+  ollama_storage:
+  ai_worker_models:
+  ai_worker_pretrained:

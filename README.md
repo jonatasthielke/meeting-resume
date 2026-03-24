@@ -27,7 +27,32 @@ O projeto utiliza um arquivo `.env` na raiz para centralizar as configurações.
 
 ---
 
-## ⚡ Início Rápido (Comando Único)
+## 🐳 Início Rápido com Docker (Recomendado) 🚀
+
+Para rodar tudo com um único comando, incluindo o Ollama, utilize o Docker Compose:
+
+1. **Inicie os serviços:**
+   ```bash
+   docker-compose up -d --build
+   ```
+
+2. **Verifique os logs (opcional):**
+   ```bash
+   docker-compose logs -f
+   ```
+
+3. **Acesse o sistema:**
+   Abra `http://localhost:3000` no seu navegador.
+
+**O que o Docker faz por você:**
+- Sobe o **Ollama** automaticamente (porta 11434).
+- Constrói e roda o **AI Worker** (porta 8000).
+- Constrói e roda o **Web App** (porta 3000).
+- Cria volumes persistentes para que os modelos não precisem ser baixados novamente.
+
+---
+
+## ⚡ Início Rápido Manual (Sem Docker)
 
 Agora você pode iniciar tanto o backend quanto o frontend com um único comando na raiz do projeto:
 
