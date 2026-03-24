@@ -441,6 +441,7 @@ def _run_transcription(
         condition_on_previous_text=True,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
+        word_timestamps=True,
     )
 
     label = "CPU" if use_cpu_label else ""
@@ -626,6 +627,40 @@ def _process_audio(
         # Round the values
         speaker_stats = {k: round(v, 2) for k, v in speaker_stats.items()}
 
+        # --- Structure result for playback synchronization ---
+        timed_segments = []
+        if 'labels' in locals() and labels:
+            for seg, label in zip(segments, labels):
+                speaker_name = f"Pessoa {label + 1}"
+                
+                # Format words for this segment
+                segment_words = []
+                if seg.words:
+                    for w in seg.words:
+                        segment_words.append({
+                            "word": w.word,
+                            "start": round(w.start, 2),
+                            "end": round(w.end, 2)
+                        })
+
+                timed_segments.append({
+                    "start": round(seg.start, 2),
+                    "end": round(seg.end, 2),
+                    "speaker": speaker_name,
+                    "text": seg.text.strip(),
+                    "words": segment_words
+                })
+        else:
+            # Fallback for no diarization
+            for seg in segments:
+                timed_segments.append({
+                    "start": round(seg.start, 2),
+                    "end": round(seg.end, 2),
+                    "speaker": "Participante",
+                    "text": seg.text.strip(),
+                    "words": [{"word": w.word, "start": round(w.start, 2), "end": round(w.end, 2)} for w in (seg.words or [])]
+                })
+
         yield json.dumps({
             "text": final_text.strip(),
             "language": "pt",
@@ -635,6 +670,7 @@ def _process_audio(
             "speaker_stats": speaker_stats,
             "word_count": word_count,
             "char_count": len(final_text),
+            "segments": timed_segments, # Added for synchronized highlighting
         })
 
     except Exception as exc:

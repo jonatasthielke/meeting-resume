@@ -139,7 +139,8 @@ Resumo Estruturado:`,
       word_count: workerData.word_count,
       duration: workerData.duration,
       processing_time: workerData.processing_time,
-      speaker_stats: workerData.speaker_stats
+      speaker_stats: workerData.speaker_stats,
+      segments: workerData.segments
     });
 
   } catch (error: any) {

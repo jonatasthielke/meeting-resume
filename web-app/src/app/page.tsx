@@ -5,7 +5,9 @@ import {
   Upload, FileAudio, FileText, BrainCircuit,
   Loader2, Mic, StopCircle, RefreshCw, Layers,
   ChevronRight, Calendar, Users, Clock, CheckCircle2,
-  AlertCircle, Sparkles, Cpu, Zap, XCircle
+  AlertCircle, Sparkles, Cpu, Zap, XCircle, Copy,
+  Download, Edit3, Check, Play, Pause, Volume2, ListChecks,
+  History, Trash2, ArrowLeft, ExternalLink
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
@@ -35,6 +37,13 @@ export default function Home() {
     duration?: number;
     processing_time?: number;
     speaker_stats?: Record<string, number>;
+    segments?: Array<{
+      start: number;
+      end: number;
+      speaker: string;
+      text: string;
+      words: Array<{ word: string, start: number, end: number }>
+    }>;
   } | null>(null);
 
   // Live Mode
@@ -46,10 +55,94 @@ export default function Home() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // History State
+  const [history, setHistory] = useState<any[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Audio Player State
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+
+  // Task List Extraction
+  const [actionItems, setActionItems] = useState<string[]>([]);
+  const [checkedItems, setCheckedItems] = useState<Record<number, boolean>>({});
+
+  useEffect(() => {
+    const saved = localStorage.getItem("meeting_history");
+    if (saved) setHistory(JSON.parse(saved));
+  }, []);
+
+  const saveToHistory = (newResult: any) => {
+    const updated = [
+      { ...newResult, timestamp: new Date().toISOString(), id: Date.now() },
+      ...history.slice(0, 4) // Keep last 5
+    ];
+    setHistory(updated);
+    localStorage.setItem("meeting_history", JSON.stringify(updated));
+  };
+
+  // Speaker Customization
+  const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+  const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
+  const [tempName, setTempName] = useState("");
+
+  // UI Feedback
+  const [copiedStage, setCopiedStage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (results?.speaker_stats) {
+      const initialNames: Record<string, string> = {};
+      Object.keys(results.speaker_stats).forEach(key => {
+        initialNames[key] = key;
+      });
+      setSpeakerNames(initialNames);
+    }
+  }, [results]);
+
+  const handleRenameSpeaker = (originalId: string) => {
+    if (tempName.trim()) {
+      setSpeakerNames(prev => ({ ...prev, [originalId]: tempName.trim() }));
+    }
+    setEditingSpeaker(null);
+  };
+
+  const copyToClipboard = async (text: string, stage: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedStage(stage);
+      setTimeout(() => setCopiedStage(null), 2000);
+    } catch (err) {
+      console.error("Erro ao copiar: ", err);
+    }
+  };
+
+  const exportToMarkdown = () => {
+    if (!results) return;
+    
+    let content = `# Reunião - ${new Date().toLocaleDateString()}\n\n`;
+    content += `## 📊 Resumo da IA\n\n${displaySummary}\n\n`;
+    content += `## 📝 Transcrição Completa\n\n${displayTranscription}\n`;
+    
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `meeting_resume_${new Date().toISOString().split('T')[0]}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      setFile(selectedFile);
       setResults(null);
+      setAudioUrl(URL.createObjectURL(selectedFile));
+      setActionItems([]);
     }
   };
 
@@ -96,6 +189,8 @@ export default function Home() {
       if (!response.ok) throw new Error("Falha ao processar");
       const data = await response.json();
       setResults(data);
+      saveToHistory(data);
+      extractActionItems(data.summary);
     } catch (err: any) {
       if (err.name === 'AbortError') {
         setProgressStatus("Cancelado pelo usuário");
@@ -183,6 +278,9 @@ export default function Home() {
         const response = await fetch("/api/process", { method: "POST", body: formData });
         const data = await response.json();
         setResults(data);
+        setAudioUrl(URL.createObjectURL(audioBlob));
+        saveToHistory(data);
+        extractActionItems(data.summary);
       } catch (err) {
         alert("Erro no resumo final.");
       } finally {
@@ -191,8 +289,76 @@ export default function Home() {
     }, 500);
   };
 
-  const displayTranscription = results?.transcription || previewText || liveTranscription;
-  const displaySummary = results?.summary;
+  const extractActionItems = (summary: string) => {
+    if (!summary) return;
+    const lines = summary.split('\n');
+    let inActionSection = false;
+    const items: string[] = [];
+
+    lines.forEach(line => {
+      if (line.includes('## ⚡ Decisões') || line.includes('Próximos Passos') || line.includes('Action Items')) {
+        inActionSection = true;
+      } else if (line.startsWith('## ') && inActionSection) {
+        inActionSection = false;
+      } else if (inActionSection && (line.trim().startsWith('-') || line.trim().startsWith('*'))) {
+        items.push(line.replace(/^[-*]\s*/, '').trim());
+      }
+    });
+
+    if (items.length > 0) {
+      setActionItems(items);
+      setCheckedItems({});
+    }
+  };
+
+  const deleteHistoryItem = (id: number) => {
+    const updated = history.filter(item => item.id !== id);
+    setHistory(updated);
+    localStorage.setItem("meeting_history", JSON.stringify(updated));
+  };
+
+  const loadFromHistory = (item: any) => {
+    setResults(item);
+    extractActionItems(item.summary);
+    setShowHistory(false);
+  };
+
+  // Process summary and transcription with custom names
+  const getProcessedText = (originalText: string) => {
+    let text = originalText;
+    if (!text) return "";
+    
+    Object.entries(speakerNames).forEach(([id, name]) => {
+      if (id !== name) {
+        // Replace labels like "**Pessoa 1:**" with "**Roberto:**"
+        const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\*\\*${escapedId}:\\*\\*`, 'g');
+        text = text.replace(regex, `**${name}:**`);
+        
+        // Also catch without bold if needed
+        const regexPlain = new RegExp(`${escapedId}:`, 'g');
+        text = text.replace(regexPlain, `${name}:`);
+      }
+    });
+    return text;
+  };
+
+  const displayTranscription = getProcessedText(results?.transcription || previewText || liveTranscription);
+  const displaySummary = getProcessedText(results?.summary || "");
+
+  // Helper to group consecutive segments by speaker
+  const groupedSegments = results?.segments ? results.segments.reduce((acc: any[], current) => {
+    if (acc.length > 0 && acc[acc.length - 1].speaker === current.speaker) {
+      // Merge with last group
+      acc[acc.length - 1].words = [...acc[acc.length - 1].words, ...current.words];
+      acc[acc.length - 1].end = current.end;
+      acc[acc.length - 1].text += " " + current.text;
+    } else {
+      // Create new group
+      acc.push({ ...current });
+    }
+    return acc;
+  }, []) : [];
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-100 font-sans selection:bg-indigo-500/30">
@@ -217,9 +383,18 @@ export default function Home() {
               </div>
             </div>
             <div>
-              <h1 className="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
-                Meeting Resume <span className="text-indigo-400">AI</span>
-              </h1>
+              <div className="flex items-center gap-3">
+                <h1 className="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
+                  Meeting Resume <span className="text-indigo-400">AI</span>
+                </h1>
+                <button 
+                  onClick={() => setShowHistory(true)}
+                  className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-indigo-400 transition-all"
+                  title="Histórico Local"
+                >
+                  <History className="w-6 h-6" />
+                </button>
+              </div>
               <p className="text-slate-400 mt-1 font-medium flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                 Processamento Local Privado
@@ -227,24 +402,28 @@ export default function Home() {
             </div>
           </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="flex bg-slate-800/50 backdrop-blur-md p-1.5 rounded-2xl border border-slate-700/50 shadow-xl"
-          >
-            <button
-              onClick={() => { setActiveTab("upload"); setResults(null); }}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === "upload" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:text-white"}`}
-            >
-              <Upload className="w-4 h-4" /> Arquivo
-            </button>
-            <button
-              onClick={() => { setActiveTab("live"); setResults(null); }}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === "live" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:text-white"}`}
-            >
-              <Mic className="w-4 h-4" /> Ao Vivo
-            </button>
-          </motion.div>
+            <div className="flex bg-slate-800/50 backdrop-blur-md p-1.5 rounded-2xl border border-slate-700/50 shadow-xl gap-2">
+              <button
+                onClick={() => { setActiveTab("upload"); setResults(null); }}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === "upload" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:text-white"}`}
+              >
+                <Upload className="w-4 h-4" /> Arquivo
+              </button>
+              <button
+                onClick={() => { setActiveTab("live"); setResults(null); }}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === "live" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:text-white"}`}
+              >
+                <Mic className="w-4 h-4" /> Ao Vivo
+              </button>
+              {results && (
+                <button
+                  onClick={exportToMarkdown}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600 hover:text-white transition-all border border-emerald-500/20"
+                >
+                  <Download className="w-4 h-4" /> Exportar
+                </button>
+              )}
+            </div>
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
@@ -467,7 +646,103 @@ export default function Home() {
                     </motion.div>
                   )}
                   
-                  {/* Speaker Stats (Detailed) */}
+                  {/* Audio Player Card */}
+                  {audioUrl && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-slate-800/40 backdrop-blur-xl border border-slate-700/50 rounded-3xl p-6 flex flex-col md:flex-row items-center gap-6 shadow-xl"
+                    >
+                      <div className="flex items-center gap-4 w-full">
+                         <button 
+                          onClick={() => {
+                            if (audioRef.current?.paused) {
+                              audioRef.current.play();
+                              setIsPlaying(true);
+                            } else {
+                              audioRef.current?.pause();
+                              setIsPlaying(false);
+                            }
+                          }}
+                          className="w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center text-white shadow-lg shadow-indigo-600/20 transition-all active:scale-95"
+                         >
+                            {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-1" />}
+                         </button>
+                         <div className="flex-1">
+                            <audio 
+                              ref={audioRef} 
+                              src={audioUrl} 
+                              className="hidden" 
+                              onPlay={() => setIsPlaying(true)}
+                              onPause={() => setIsPlaying(false)}
+                              onEnded={() => setIsPlaying(false)}
+                              onTimeUpdate={() => {
+                                if (audioRef.current) {
+                                  setAudioCurrentTime(audioRef.current.currentTime);
+                                  setAudioProgress((audioRef.current.currentTime / audioRef.current.duration) * 100);
+                                }
+                              }}
+                              onLoadedMetadata={() => {
+                                if (audioRef.current) setAudioDuration(audioRef.current.duration);
+                              }}
+                            />
+                            <div className="flex items-center justify-between mb-2">
+                               <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Player de Reunião</p>
+                               <div className="flex items-center gap-2 text-indigo-400">
+                                  <span className="text-[10px] font-mono">{Math.floor(audioCurrentTime / 60)}:{(audioCurrentTime % 60).toFixed(0).padStart(2, '0')} / {Math.floor(audioDuration / 60)}:{(audioDuration % 60).toFixed(0).padStart(2, '0')}</span>
+                                  <Volume2 className="w-4 h-4" />
+                               </div>
+                            </div>
+                            <div 
+                              className="h-2 w-full bg-slate-900 rounded-full overflow-hidden flex items-center cursor-pointer group/progress"
+                              onClick={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const x = e.clientX - rect.left;
+                                const pct = x / rect.width;
+                                if (audioRef.current) audioRef.current.currentTime = pct * audioRef.current.duration;
+                              }}
+                            >
+                               <div 
+                                  className="h-full bg-indigo-500 transition-all duration-300 relative" 
+                                  style={{ width: `${audioProgress}%` }} 
+                               >
+                                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg scale-0 group-hover/progress:scale-100 transition-transform" />
+                               </div>
+                            </div>
+                         </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Action Items / Checklist */}
+                  {actionItems.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="bg-gradient-to-br from-emerald-900/20 to-slate-900/40 backdrop-blur-xl border border-emerald-500/20 rounded-[32px] overflow-hidden"
+                    >
+                      <div className="px-8 py-5 border-b border-emerald-500/10 flex items-center justify-between bg-white/5">
+                        <div className="flex items-center gap-3 text-emerald-400">
+                          <ListChecks className="w-4 h-4" />
+                          <span className="font-bold text-xs uppercase tracking-widest text-slate-300">Lista de Tarefas (Extraída)</span>
+                        </div>
+                      </div>
+                      <div className="p-8 space-y-3">
+                        {actionItems.map((item, idx) => (
+                          <div 
+                            key={idx} 
+                            onClick={() => setCheckedItems({ ...checkedItems, [idx]: !checkedItems[idx] })}
+                            className={`flex items-start gap-4 p-4 rounded-2xl border transition-all cursor-pointer ${checkedItems[idx] ? "bg-emerald-500/5 border-emerald-500/30 opacity-60" : "bg-slate-900/40 border-slate-700/30 hover:border-emerald-500/30"}`}
+                          >
+                            <div className={`mt-1 w-5 h-5 rounded-md flex items-center justify-center transition-all ${checkedItems[idx] ? "bg-emerald-500 text-white" : "border-2 border-slate-600"}`}>
+                              {checkedItems[idx] && <Check className="w-3 h-3" />}
+                            </div>
+                            <p className={`text-sm font-medium ${checkedItems[idx] ? "line-through text-slate-500" : "text-slate-200"}`}>{item}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
                   {results && results.speaker_stats && Object.keys(results.speaker_stats).length > 0 && (
                     <motion.div
                        initial={{ opacity: 0, scale: 0.98 }}
@@ -481,14 +756,35 @@ export default function Home() {
                         </div>
                       </div>
                       <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {Object.entries(results.speaker_stats).map(([speaker, seconds]) => (
-                          <div key={speaker} className="flex items-center justify-between p-4 bg-slate-900/40 rounded-2xl border border-slate-700/30 hover:border-indigo-500/30 transition-all group">
-                            <div className="flex items-center gap-3">
-                               <div className="w-10 h-10 bg-gradient-to-br from-indigo-500/20 to-indigo-600/10 rounded-xl flex items-center justify-center text-indigo-400 font-bold group-hover:scale-110 transition-transform">
-                                  {speaker.split(' ')[1]}
+                        {Object.entries(results.speaker_stats).map(([originalId, seconds]) => (
+                          <div key={originalId} className="flex items-center justify-between p-4 bg-slate-900/40 rounded-2xl border border-slate-700/30 hover:border-indigo-500/30 transition-all group">
+                            <div className="flex items-center gap-3 overflow-hidden">
+                               <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-br from-indigo-500/20 to-indigo-600/10 rounded-xl flex items-center justify-center text-indigo-400 font-bold group-hover:scale-110 transition-transform">
+                                  {originalId.split(' ')[1]}
                                </div>
-                               <div>
-                                  <p className="font-bold text-slate-200 text-sm">{speaker}</p>
+                               <div className="overflow-hidden">
+                                  {editingSpeaker === originalId ? (
+                                    <div className="flex items-center gap-1">
+                                      <input 
+                                        autoFocus
+                                        value={tempName}
+                                        onChange={(e) => setTempName(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleRenameSpeaker(originalId)}
+                                        className="bg-slate-800 border border-indigo-500/50 rounded px-2 py-0.5 text-xs text-white outline-none w-24"
+                                      />
+                                      <button onClick={() => handleRenameSpeaker(originalId)} className="text-emerald-500"><Check className="w-3 h-3" /></button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1.5 group/name">
+                                      <p className="font-bold text-slate-200 text-sm truncate">{speakerNames[originalId] || originalId}</p>
+                                      <button 
+                                        onClick={() => { setEditingSpeaker(originalId); setTempName(speakerNames[originalId] || originalId); }}
+                                        className="opacity-0 group-hover:opacity-100 group-hover/name:text-indigo-400 transition-all"
+                                      >
+                                        <Edit3 className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  )}
                                   <div className="w-16 h-1 bg-slate-800 rounded-full mt-1.5 overflow-hidden">
                                      <div 
                                         className="h-full bg-indigo-500" 
@@ -497,7 +793,7 @@ export default function Home() {
                                   </div>
                                </div>
                             </div>
-                            <div className="text-right">
+                            <div className="text-right flex-shrink-0 ml-2">
                                <p className="text-sm font-black text-white">{Math.floor(seconds / 60)}m {Math.round(seconds % 60)}s</p>
                                <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{Math.round((seconds / (results.duration || 1)) * 100)}%</p>
                             </div>
@@ -514,6 +810,14 @@ export default function Home() {
                         <div className="p-2 bg-indigo-500/20 rounded-lg"><Sparkles className="w-4 h-4 text-indigo-400" /></div>
                         <span className="font-bold text-xs uppercase tracking-widest text-indigo-300">Resumo da IA</span>
                       </div>
+                      {results && (
+                        <button 
+                          onClick={() => copyToClipboard(displaySummary, 'summary')}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold transition-all border border-slate-700"
+                        >
+                          {copiedStage === 'summary' ? <><Check className="w-3 h-3 text-emerald-500" /> Copiado</> : <><Copy className="w-3 h-3" /> Copiar</>}
+                        </button>
+                      )}
                     </div>
                     <div className="p-8 lg:p-10 max-h-[400px] overflow-y-auto custom-scrollbar">
                       {loading && activeTab === "live" ? (
@@ -531,22 +835,66 @@ export default function Home() {
 
                   {/* Transcription (Secondary Result) */}
                   <div className="bg-slate-800/40 backdrop-blur-xl border border-slate-700/50 rounded-[32px] overflow-hidden">
-                    <div className="px-8 py-4 border-b border-slate-700/50 flex items-center justify-between">
+                    <div className="px-8 py-4 border-b border-slate-700/50 flex items-center justify-between bg-white/5">
                       <div className="flex items-center gap-3 text-slate-400">
                         <FileText className="w-4 h-4" />
                         <span className="font-bold text-xs uppercase tracking-widest">Transcrição Completa</span>
                       </div>
-                      {isRecording && (
-                        <span className="flex items-center gap-2 scale-75">
-                          <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                          <span className="text-red-400 font-bold">LIVE</span>
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {results && (
+                          <button 
+                            onClick={() => copyToClipboard(displayTranscription, 'transcription')}
+                            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold transition-all border border-slate-700"
+                          >
+                            {copiedStage === 'transcription' ? <><Check className="w-3 h-3 text-emerald-500" /> Copiado</> : <><Copy className="w-3 h-3" /> Copiar</>}
+                          </button>
+                        )}
+                        {isRecording && (
+                          <span className="flex items-center gap-2 scale-75">
+                            <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                            <span className="text-red-400 font-bold">LIVE</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="p-8 max-h-[300px] overflow-y-auto custom-scrollbar">
-                      <p className="text-slate-300 leading-relaxed font-medium whitespace-pre-wrap">
-                        {displayTranscription || "Nenhuma fala capturada ainda."}
-                      </p>
+                    <div className="p-8 max-h-[500px] overflow-y-auto custom-scrollbar">
+                      {groupedSegments.length > 0 ? (
+                        <div className="space-y-8">
+                           {groupedSegments.map((seg: any, sIdx: number) => (
+                             <div key={sIdx} className="group/seg relative pl-8 border-l-2 border-slate-700/50 hover:border-indigo-500/50 transition-colors pb-2">
+                                <div className="flex items-center gap-3 mb-3">
+                                  <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold text-xs">
+                                     {seg.speaker.split(' ')[1] || "S"}
+                                  </div>
+                                  <span className="text-xs font-black text-slate-200 uppercase tracking-widest">
+                                    {speakerNames[seg.speaker] || seg.speaker}
+                                  </span>
+                                  <span className="text-[10px] font-mono text-slate-500 px-2 py-0.5 bg-slate-800/50 rounded border border-slate-700/50">
+                                    {Math.floor(seg.start / 60)}:{(seg.start % 60).toFixed(0).padStart(2, '0')}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap text-[15px] leading-relaxed tracking-tight">
+                                   {seg.words && seg.words.map((w: any, wIdx: number) => {
+                                       const isActive = audioCurrentTime >= w.start && audioCurrentTime <= w.end;
+                                       return (
+                                         <span 
+                                          key={wIdx} 
+                                          onClick={() => { if(audioRef.current) audioRef.current.currentTime = w.start; }}
+                                          className={`transition-all duration-150 cursor-pointer mr-0.5 rounded px-0.5 inline-block ${isActive ? "bg-indigo-500 text-white font-bold shadow-lg shadow-indigo-600/30 scale-105 z-10" : "text-slate-400 hover:text-white hover:bg-slate-700/50"}`}
+                                         >
+                                           {w.word}
+                                         </span>
+                                       )
+                                     })}
+                                </div>
+                             </div>
+                           ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-300 leading-relaxed font-medium whitespace-pre-wrap">
+                          {displayTranscription || "Nenhuma fala capturada ainda."}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -580,6 +928,69 @@ export default function Home() {
         .prose p { margin-bottom: 1rem; color: #94a3b8; }
         .prose strong { color: #f8fafc; }
       `}</style>
+
+      {/* History Sidebar */}
+      <AnimatePresence>
+        {showHistory && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowHistory(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100]"
+            />
+            <motion.div 
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-900 border-l border-slate-800 shadow-2xl z-[101] p-8"
+            >
+              <div className="flex items-center justify-between mb-10">
+                <div className="flex items-center gap-3">
+                  <History className="w-6 h-6 text-indigo-400" />
+                  <h2 className="text-xl font-bold">Histórico</h2>
+                </div>
+                <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-slate-800 rounded-full transition-all">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {history.length === 0 ? (
+                  <div className="text-center py-20 text-slate-500">
+                    <History className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                    <p>Nenhuma reunião salva ainda.</p>
+                  </div>
+                ) : (
+                  history.map((item) => (
+                    <div key={item.id} className="group relative">
+                      <div 
+                        onClick={() => loadFromHistory(item)}
+                        className="w-full text-left p-5 bg-slate-800/50 hover:bg-indigo-500/10 border border-slate-700/50 hover:border-indigo-500/30 rounded-2xl transition-all cursor-pointer"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                           <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">{new Date(item.timestamp).toLocaleDateString()}</span>
+                           <span className="text-[10px] text-slate-500">{item.word_count} palavras</span>
+                        </div>
+                        <h3 className="font-bold text-slate-200 line-clamp-1">{item.summary.split('\n')[0].replace(/^#\s*/, '') || "Reunião sem título"}</h3>
+                        <p className="text-xs text-slate-500 mt-1 line-clamp-2">{item.transcription.substring(0, 100)}...</p>
+                      </div>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); deleteHistoryItem(item.id); }}
+                        className="absolute top-4 right-4 p-2 bg-red-500/10 text-red-500 rounded-lg opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500 hover:text-white"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
