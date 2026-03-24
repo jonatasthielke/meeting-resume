@@ -67,42 +67,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ transcription: text });
     }
 
-    console.log('--- Step 2: Summarizing with Ollama ---');
-    await updateProgress(5, `Verificando modelo ${modelSummary}...`);
-    
-    let summary = "";
-    try {
-        // 2a. Check if model exists, if not pull it
-        const checkResponse = await fetch(`${ollamaBaseUrl}/api/show`, {
-            method: 'POST',
-            body: JSON.stringify({ name: modelSummary }),
-            signal: AbortSignal.timeout(30000), // 30 seconds for initial check
-        });
+    const summaryProvider = process.env.SUMMARY_PROVIDER || 'LOCAL';
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    const openaiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-        if (!checkResponse.ok) {
-            console.log(`Model ${modelSummary} not found. Pulling...`);
-            await updateProgress(10, `Baixando modelo ${modelSummary} (isso pode demorar)...`);
-            
-            const pullResponse = await fetch(`${ollamaBaseUrl}/api/pull`, {
-                method: 'POST',
-                body: JSON.stringify({ name: modelSummary, stream: false }),
-                signal: AbortSignal.timeout(600000), // 10 minutes for model pull
-            });
-
-            if (!pullResponse.ok) {
-                throw new Error(`Falha ao baixar o modelo ${modelSummary} do Ollama.`);
-            }
-            console.log(`Model ${modelSummary} pulled successfully.`);
-        }
-
-        await updateProgress(40, "Gerando resumo estruturado...");
-        
-        const ollamaResponse = await fetch(`${ollamaBaseUrl}/api/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: modelSummary,
-            prompt: `Você é um Secretário Executivo de IA altamente eficiente.
+    const promptTemplate = `Você é um Secretário Executivo de IA altamente eficiente.
 O texto abaixo é uma transcrição de uma reunião. Suas tarefas são:
 1. Identificar o tema principal da reunião.
 2. Listar os participantes mencionados (Oradores).
@@ -118,24 +87,95 @@ Use Markdown para formatar a resposta da seguinte forma:
 Transcrição:
 ${text}
 
-Resumo Estruturado:`,
-            stream: false,
-          }),
-          signal: AbortSignal.timeout(600000), // 10 minutes for summarization
-        });
+Resumo Estruturado:`;
 
-        if (ollamaResponse.ok) {
-            const ollamaData = await ollamaResponse.json();
-            summary = ollamaData.response;
-            await updateProgress(100, "Concluído!");
-        } else {
-            summary = `⚠️ **Erro ao conectar com Ollama.**\nCertifique-se de que o Ollama está rodando localmente com o modelo \`${modelSummary}\`.`;
-            await updateProgress(0, "Erro no resumo");
-        }
-    } catch (ollamaErr) {
-        console.error('Ollama fetch error:', ollamaErr);
-        summary = "🔴 **Serviço Ollama offline.**\nPor favor, inicie o Ollama em seu terminal com o comando: `ollama run qwen2.5:3b`.";
-        await updateProgress(0, "Ollama offline");
+    console.log(`--- Step 2: Summarizing with ${summaryProvider} ---`);
+    let summary = "";
+
+    if (summaryProvider === 'OPENAI') {
+      if (!openaiApiKey) {
+        throw new Error("OPENAI_API_KEY não configurada no arquivo .env");
+      }
+      
+      await updateProgress(50, "Gerando resumo via OpenAI...");
+      
+      const openAIResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${openaiApiKey}`
+        },
+        body: JSON.stringify({
+          model: openaiModel,
+          messages: [
+            { role: "system", content: "Você é um assistente de resumo de reuniões de alta precisão." },
+            { role: "user", content: promptTemplate }
+          ],
+          temperature: 0.7
+        }),
+        signal: AbortSignal.timeout(60000), 
+      });
+
+      if (!openAIResponse.ok) {
+        const errorData = await openAIResponse.json();
+        throw new Error(`OpenAI API error: ${errorData.error?.message || openAIResponse.statusText}`);
+      }
+
+      const openAIData = await openAIResponse.json();
+      summary = openAIData.choices[0].message.content;
+      await updateProgress(100, "Concluído!");
+
+    } else {
+      // --- Lógica OLLAMA (Local) ---
+      await updateProgress(5, `Verificando modelo local ${modelSummary}...`);
+      
+      try {
+          const checkResponse = await fetch(`${ollamaBaseUrl}/api/show`, {
+              method: 'POST',
+              body: JSON.stringify({ name: modelSummary }),
+              signal: AbortSignal.timeout(30000),
+          });
+
+          if (!checkResponse.ok) {
+              console.log(`Model ${modelSummary} not found. Pulling...`);
+              await updateProgress(10, `Baixando modelo ${modelSummary} (isso pode demorar)...`);
+              
+              const pullResponse = await fetch(`${ollamaBaseUrl}/api/pull`, {
+                  method: 'POST',
+                  body: JSON.stringify({ name: modelSummary, stream: false }),
+                  signal: AbortSignal.timeout(600000), 
+              });
+
+              if (!pullResponse.ok) {
+                  throw new Error(`Falha ao baixar o modelo ${modelSummary} do Ollama.`);
+              }
+          }
+
+          await updateProgress(40, "Gerando resumo estruturado local...");
+          
+          const ollamaResponse = await fetch(`${ollamaBaseUrl}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: modelSummary,
+              prompt: promptTemplate,
+              stream: false,
+            }),
+            signal: AbortSignal.timeout(600000),
+          });
+
+          if (ollamaResponse.ok) {
+              const ollamaData = await ollamaResponse.json();
+              summary = ollamaData.response;
+              await updateProgress(100, "Concluído!");
+          } else {
+              summary = `⚠️ **Erro ao conectar com Ollama.**\nCertifique-se de que o Ollama está rodando localmente com o modelo \`${modelSummary}\`.`;
+          }
+      } catch (ollamaErr) {
+          console.error('Ollama fetch error:', ollamaErr);
+          summary = `🔴 **Serviço Ollama offline ou erro.**\nCertifique-se de que o Ollama está rodando ou mude para o provedor OPENAI no .env.`;
+          await updateProgress(0, "Erro no resumo");
+      }
     }
 
     return NextResponse.json({
