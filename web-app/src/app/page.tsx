@@ -55,7 +55,7 @@ interface ActionItem {
 }
 
 // --- Constants ---
-const API_BASE = "http://localhost:8000";
+const API_BASE = "/api/worker";
 const INTERNAL_API = "/api/process";
 const HISTORY_KEY = "meeting_history";
 
@@ -157,6 +157,18 @@ export default function Home() {
     };
   }, [audioUrl]);
 
+  // Auto-cancel on page refresh/close
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (loading) {
+        // Use sendBeacon to ensure the request goes through even if the page unloads
+        navigator.sendBeacon(`${API_BASE}/cancel`);
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [loading]);
+
   // --- Handlers ---
 
   const clearError = () => setGlobalError(null);
@@ -164,7 +176,7 @@ export default function Home() {
   const saveToHistory = useCallback((newResult: MeetingResult) => {
     setHistory(prev => {
       const updated: HistoryItem[] = [
-        { ...newResult, timestamp: new Date().toISOString(), id: crypto.randomUUID() },
+        { ...newResult, timestamp: new Date().toISOString(), id: (Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)) },
         ...prev.slice(0, 9)
       ];
       localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
@@ -393,7 +405,7 @@ export default function Home() {
       else if (inSection && (line.trim().startsWith('-') || line.trim().startsWith('*') || line.includes('[ ]'))) {
         const cleanText = line.replace(/^([-*]|\[ \])\s*/, '').replace(/\[ \]/g, '').trim();
         if (cleanText.length > 3) {
-          items.push({ text: cleanText, checked: false, id: crypto.randomUUID() });
+          items.push({ text: cleanText, checked: false, id: (Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)) });
         }
       }
     });
@@ -734,7 +746,7 @@ export default function Home() {
                               onChange={(e) => setNewTaskText(e.target.value)}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' && newTaskText.trim()) {
-                                  setActionItems([{ text: newTaskText.trim(), checked: false, id: crypto.randomUUID() }, ...actionItems]);
+                                  setActionItems([{ text: newTaskText.trim(), checked: false, id: (Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)) }, ...actionItems]);
                                   setNewTaskText("");
                                 }
                               }}
@@ -743,7 +755,7 @@ export default function Home() {
                             />
                             <button onClick={() => {
                               if (newTaskText.trim()) {
-                                setActionItems([{ text: newTaskText.trim(), checked: false, id: crypto.randomUUID() }, ...actionItems]);
+                                setActionItems([{ text: newTaskText.trim(), checked: false, id: (Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)) }, ...actionItems]);
                                 setNewTaskText("");
                               }
                             }} className="p-2 bg-emerald-600 rounded-xl hover:bg-emerald-500 transition-colors" aria-label="Adicionar tarefa">

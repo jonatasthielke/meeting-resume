@@ -128,9 +128,10 @@ def resolve_device(requested: str = "auto") -> str:
 
 
 def compute_type_for(device: str) -> str:
-    # On many consumer cards (like GTX 16-series), int8 or float16 might have issues
-    # depending on the ctranslate2 version. float16 is usually best for speed.
-    return "float16" if device == "cuda" else "int8"
+    # On many consumer cards (like GTX 16-series or limited VRAM), float16 can OOM.
+    # int8_float16 uses 8-bit quantization which drastically reduces VRAM requirements
+    # without significantly impacting transcription quality.
+    return "int8_float16" if device == "cuda" else "int8"
 
 # ---------------------------------------------------------------------------
 # Whisper model manager
@@ -520,6 +521,9 @@ def _run_transcription(
             _progress.update_stage("transcription", pct, f"Transcrevendo{suffix}… {pct}%")
         
         _progress.current_text += (seg.text.strip() + " ")
+        if len(_progress.current_text) > 1000:
+            _progress.current_text = "..." + _progress.current_text[-1000:]
+            
         yield seg
 
 

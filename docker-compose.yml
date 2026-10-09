@@ -5,17 +5,17 @@ services:
     container_name: m-resume-ollama
     volumes:
       - ollama_storage:/root/.ollama
-    ports:
-      - "11434:11434"
+    #ports:
+      #- "11434:11434"
     restart: unless-stopped
     # Uncomment deploy section below for GPU support (requires NVIDIA container toolkit)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # --- AI Worker Service (Transcription & Diarization) ---
   ai-worker:
@@ -36,13 +36,13 @@ services:
       - ollama
     restart: unless-stopped
     # Same as above for GPU support
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # --- Web App Service (Frontend & Orchestrator) ---
   web-app:

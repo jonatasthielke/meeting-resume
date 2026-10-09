@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
     const transcriptionResponse = await fetch(`${workerUrl}/transcribe?model_name=${modelTranscription}&device=${device}`, {
       method: 'POST',
       body: workerFormData,
-      signal: AbortSignal.timeout(600000), // 10 minutes
+      signal: AbortSignal.timeout(3600000), // 10 minutes
     });
 
     if (!transcriptionResponse.ok) {
@@ -117,7 +117,7 @@ Resumo Estruturado (EM PORTUGUÊS):`;
           ],
           temperature: 0.7
         }),
-        signal: AbortSignal.timeout(60000), 
+        signal: AbortSignal.timeout(3600000), 
       });
 
       if (!openAIResponse.ok) {
@@ -137,7 +137,7 @@ Resumo Estruturado (EM PORTUGUÊS):`;
           const checkResponse = await fetch(`${ollamaBaseUrl}/api/show`, {
               method: 'POST',
               body: JSON.stringify({ name: modelSummary }),
-              signal: AbortSignal.timeout(30000),
+              signal: AbortSignal.timeout(3600000),
           });
 
           if (!checkResponse.ok) {
@@ -147,7 +147,7 @@ Resumo Estruturado (EM PORTUGUÊS):`;
               const pullResponse = await fetch(`${ollamaBaseUrl}/api/pull`, {
                   method: 'POST',
                   body: JSON.stringify({ name: modelSummary, stream: false }),
-                  signal: AbortSignal.timeout(600000), 
+                  signal: AbortSignal.timeout(3600000), 
               });
 
               if (!pullResponse.ok) {
@@ -166,7 +166,7 @@ Resumo Estruturado (EM PORTUGUÊS):`;
               stream: true, // Habilitar streaming para progresso granular
               keep_alive: 0,
             }),
-            signal: AbortSignal.timeout(600000),
+            signal: AbortSignal.timeout(3600000),
           });
 
           if (ollamaResponse.ok && ollamaResponse.body) {
